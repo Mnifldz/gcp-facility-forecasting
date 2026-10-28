@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: facility_forecasting_features
+    description: >
+      Facility-level forecasting features with
+      seven-day-ahead booking demand targets.
+
+    columns:
+      - name: facility_id
+        data_tests:
+          - not_null
+
+      - name: prediction_date
+        data_tests:
+          - not_null
+
+      - name: bookings_today
+        data_tests:
+          - not_null
+
+      - name: bookings_lag_14
+        data_tests:
+          - not_null
+
+      - name: bookings_next_7_days
+        data_tests:
+          - not_null

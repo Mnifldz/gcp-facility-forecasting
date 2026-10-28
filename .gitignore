@@ -1,0 +1,23 @@
+# Python virtual environments
+.venv/
+.venv-dbt/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# dbt generated files
+target/
+dbt_packages/
+logs/
+
+# Local credentials and environment variables
+.env
+.env.*
+*.json.key
+
+# macOS
+.DS_Store
