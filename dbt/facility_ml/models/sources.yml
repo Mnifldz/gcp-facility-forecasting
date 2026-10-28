@@ -1,0 +1,16 @@
+version: 2
+
+sources:
+  - name: storage_raw
+    database: storage-analytics-lab
+    schema: storage_raw
+
+    tables:
+      - name: facilities
+
+  - name: storage_analytics
+    database: storage-analytics-lab
+    schema: storage_analytics
+
+    tables:
+      - name: daily_facility_metrics
