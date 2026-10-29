@@ -1,0 +1,287 @@
+# PIPELINE DEFINITION
+# Name: facility-demand-forecasting
+components:
+  comp-evaluate-and-register:
+    executorLabel: exec-evaluate-and-register
+    inputDefinitions:
+      artifacts:
+        trained_model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+        training_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        evaluation_metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+        registered_model_name:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-load-training-data:
+    executorLabel: exec-load-training-data
+    outputDefinitions:
+      artifacts:
+        training_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-train-lightgbm:
+    executorLabel: exec-train-lightgbm
+    inputDefinitions:
+      artifacts:
+        training_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        trained_model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+defaultPipelineRoot: gs://storage-analytics-lab-vertex-artifacts/pipelines/facility-forecasting
+deploymentSpec:
+  executors:
+    exec-evaluate-and-register:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - evaluate_and_register
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'google-cloud-aiplatform'\
+          \ 'google-cloud-storage' 'pandas' 'pyarrow' 'lightgbm' 'scikit-learn' 'joblib'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.18.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef evaluate_and_register(\n    training_data: Input[Dataset],\n\
+          \    trained_model: Input[Model],\n    evaluation_metrics: Output[Metrics],\n\
+          \    registered_model_name: Output[Dataset],\n):\n    import uuid\n    from\
+          \ pathlib import Path\n\n    from google.cloud import aiplatform, storage\n\
+          \    from google.api_core.exceptions import NotFound\n    from google.cloud\
+          \ import aiplatform_v1\n\n    import joblib\n    import pandas as pd\n\n\
+          \    from sklearn.metrics import (\n        mean_absolute_error,\n     \
+          \   mean_squared_error,\n    )\n\n    artifact = joblib.load(trained_model.path)\n\
+          \n    model = artifact[\"model\"]\n    features = artifact[\"features\"\
+          ]\n    categories = artifact[\"categories\"]\n\n    df = pd.read_parquet(training_data.path)\n\
+          \n    validation = df[\n        (df[\"prediction_date\"] >= \"2025-09-01\"\
+          )\n        & (df[\"prediction_date\"] <= \"2025-10-24\")\n    ].copy()\n\
+          \n    X_val = validation[features].copy()\n\n    X_val[\"facility_id\"]\
+          \ = pd.Categorical(\n        X_val[\"facility_id\"],\n        categories=categories,\n\
+          \    )\n\n    y_val = validation[\"bookings_next_7_days\"]\n\n    predictions\
+          \ = model.predict(X_val)\n\n    mae = float(mean_absolute_error(y_val, predictions))\n\
+          \n    rmse = float(\n        mean_squared_error(y_val, predictions) ** 0.5\n\
+          \    )\n\n    wmape = float(\n        abs(y_val - predictions).sum()\n \
+          \       / abs(y_val).sum()\n    )\n\n    evaluation_metrics.log_metric(\"\
+          mae\", mae)\n    evaluation_metrics.log_metric(\"rmse\", rmse)\n    evaluation_metrics.log_metric(\"\
+          wmape\", wmape)\n\n    print(\n        f\"Validation: MAE={mae:.4f}, \"\n\
+          \        f\"RMSE={rmse:.4f}, WMAPE={wmape:.4f}\",\n        flush=True,\n\
+          \    )\n\n    project = \"storage-analytics-lab\"\n    region = \"us-west2\"\
+          \n\n    bucket_name = \"storage-analytics-lab-registered-models\"\n    model_id\
+          \ = \"facility-demand-lightgbm\"\n\n    parent_model = (\n        \"projects/555144694235/\"\
+          \n        \"locations/us-west2/\"\n        f\"models/{model_id}\"\n    )\n\
+          \n    image_uri = (\n        \"us-west2-docker.pkg.dev/\"\n        \"storage-analytics-lab/ml-containers/\"\
+          \n        \"lightgbm-inference:v1\"\n    )\n\n    aiplatform.init(\n   \
+          \     project=project,\n        location=region,\n    )\n\n    # Store this\
+          \ run's artifact in a unique directory.\n    run_id = uuid.uuid4().hex\n\
+          \n    artifact_prefix = (\n        f\"facility-demand/{run_id}\"\n    )\n\
+          \n    artifact_uri = (\n        f\"gs://{bucket_name}/{artifact_prefix}\"\
+          \n    )\n\n    client = storage.Client(project=project)\n\n    blob = client.bucket(bucket_name).blob(\n\
+          \        f\"{artifact_prefix}/model.joblib\"\n    )\n\n    blob.upload_from_filename(trained_model.path)\n\
+          \n    print(f\"Model artifact: {artifact_uri}\", flush=True)\n\n    # Determine\
+          \ whether the parent model already exists.\n\n    model_client = aiplatform_v1.ModelServiceClient(\n\
+          \        client_options={\n            \"api_endpoint\": f\"{region}-aiplatform.googleapis.com\"\
+          \n        }\n    )\n\n    try:\n        model_client.get_model(name=parent_model)\n\
+          \        model_exists = True\n        print(\"Existing registered model\
+          \ found.\", flush=True)\n\n    except NotFound:\n        model_exists =\
+          \ False\n        print(\"No existing model; creating version 1.\", flush=True)\n\
+          \n    upload_args = {\n        \"display_name\": \"facility-demand-lightgbm\"\
+          ,\n        \"artifact_uri\": artifact_uri,\n        \"serving_container_image_uri\"\
+          : image_uri,\n        \"serving_container_predict_route\": \"/predict\"\
+          ,\n        \"serving_container_health_route\": \"/health\",\n        \"\
+          serving_container_ports\": [8080],\n        \"sync\": True,\n    }\n\n \
+          \   if model_exists:\n        # Add a new version without changing the default\
+          \ alias.\n        upload_args[\"parent_model\"] = parent_model\n       \
+          \ upload_args[\"is_default_version\"] = False\n    else:\n        # Create\
+          \ the first version with a predictable model ID.\n        upload_args[\"\
+          model_id\"] = model_id\n\n    model = aiplatform.Model.upload(**upload_args)\n\
+          \n    print(\n        f\"Registered model: {model.resource_name}\",\n  \
+          \      flush=True,\n    )\n\n    print(\n        f\"Version ID: {model.version_id}\"\
+          ,\n        flush=True,\n    )\n\n    # Save both identifiers for downstream\
+          \ use.\n    Path(registered_model_name.path).write_text(\n        f\"{model.resource_name}@{model.version_id}\"\
+          \n    )\n\n    from google.cloud import aiplatform_v1\n    from google.protobuf.struct_pb2\
+          \ import Struct\n\n    metrics = Struct()\n    metrics.update({\n      \
+          \  \"meanAbsoluteError\": mae,\n        \"rootMeanSquaredError\": rmse,\n\
+          \    })\n\n    evaluation = aiplatform_v1.ModelEvaluation(\n        display_name=\"\
+          validation\",\n        metrics_schema_uri=(\n            \"gs://google-cloud-aiplatform/schema/\"\
+          \n            \"modelevaluation/regression_metrics_1.0.0.yaml\"\n      \
+          \  ),\n        metrics=metrics,\n    )\n\n    model_client = aiplatform_v1.ModelServiceClient(\n\
+          \        client_options={\n            \"api_endpoint\": f\"{region}-aiplatform.googleapis.com\"\
+          \n        }\n    )\n\n\n    versioned_model_name = (\n        f\"{model.resource_name}@{model.version_id}\"\
+          \n    )\n\n    imported_evaluation = model_client.import_model_evaluation(\n\
+          \        parent=versioned_model_name,\n        model_evaluation=evaluation,\n\
+          \    )\n\n\n    print(\n        f\"Imported evaluation: {imported_evaluation.name}\"\
+          ,\n        flush=True,\n    )\n\n    registered_model_name.metadata[\"model_resource_name\"\
+          ] = (\n        model.resource_name\n    )\n\n    registered_model_name.metadata[\"\
+          version_id\"] = (\n        model.version_id\n    )\n\n"
+        image: python:3.11
+    exec-load-training-data:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - load_training_data
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'google-cloud-bigquery'\
+          \ 'pandas' 'db-dtypes' 'pyarrow'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.18.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef load_training_data(\n    training_data: Output[Dataset],\n):\n\
+          \    from google.cloud import bigquery\n    import pandas as pd\n\n    client\
+          \ = bigquery.Client(project=\"storage-analytics-lab\")\n\n    query = \"\
+          \"\"\n    SELECT *\n    FROM `storage-analytics-lab.storage_ml_dev.facility_forecasting_features`\n\
+          \    ORDER BY prediction_date, facility_id\n    \"\"\"\n\n    df = client.query(query).to_dataframe()\n\
+          \n    df[\"prediction_date\"] = pd.to_datetime(\n        df[\"prediction_date\"\
+          ]\n    )\n\n    # Write data to the artifact path supplied by Vertex AI.\n\
+          \    df.to_parquet(training_data.path, index=False)\n\n    training_data.metadata[\"\
+          row_count\"] = len(df)\n    training_data.metadata[\"source_table\"] = (\n\
+          \        \"storage-analytics-lab.storage_ml_dev.\"\n        \"facility_forecasting_features\"\
+          \n    )\n\n"
+        image: python:3.11
+    exec-train-lightgbm:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train_lightgbm
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas' 'pyarrow'\
+          \ 'lightgbm' 'scikit-learn'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.18.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train_lightgbm(\n    training_data: Input[Dataset],\n    trained_model:\
+          \ Output[Model],\n):\n    import pandas as pd\n    import lightgbm as lgb\n\
+          \    import joblib\n\n    df = pd.read_parquet(training_data.path)\n\n \
+          \   df[\"prediction_date\"] = pd.to_datetime(\n        df[\"prediction_date\"\
+          ]\n    )\n\n    train = df[\n        df[\"prediction_date\"] <= \"2025-08-24\"\
+          \n    ].copy()\n\n    features = [\n        \"facility_id\",\n        \"\
+          day_of_week\",\n        \"bookings_today\",\n        \"bookings_lag_1\"\
+          ,\n        \"bookings_lag_7\",\n        \"bookings_lag_14\",\n        \"\
+          bookings_rolling_7\",\n        \"bookings_rolling_28\",\n    ]\n\n    X_train\
+          \ = train[features].copy()\n    y_train = train[\"bookings_next_7_days\"\
+          ]\n\n    X_train[\"facility_id\"] = (\n        X_train[\"facility_id\"].astype(\"\
+          category\")\n    )\n\n    model = lgb.LGBMRegressor(\n        objective=\"\
+          regression\",\n        n_estimators=100,\n        learning_rate=0.05,\n\
+          \        num_leaves=7,\n        max_depth=3,\n        min_child_samples=20,\n\
+          \        random_state=42,\n        verbosity=-1,\n    )\n\n    model.fit(\n\
+          \        X_train,\n        y_train,\n        categorical_feature=[\"facility_id\"\
+          ],\n    )\n\n    joblib.dump(\n        {\n            \"model\": model,\n\
+          \            \"features\": features,\n            \"categories\": list(\n\
+          \                X_train[\"facility_id\"].cat.categories\n            ),\n\
+          \        },\n        trained_model.path,\n    )\n\n    trained_model.metadata[\"\
+          algorithm\"] = \"LightGBM\"\n    trained_model.metadata[\"training_rows\"\
+          ] = len(train)\n\n"
+        image: python:3.11
+pipelineInfo:
+  name: facility-demand-forecasting
+root:
+  dag:
+    tasks:
+      evaluate-and-register:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate-and-register
+        dependentTasks:
+        - load-training-data
+        - train-lightgbm
+        inputs:
+          artifacts:
+            trained_model:
+              taskOutputArtifact:
+                outputArtifactKey: trained_model
+                producerTask: train-lightgbm
+            training_data:
+              taskOutputArtifact:
+                outputArtifactKey: training_data
+                producerTask: load-training-data
+        taskInfo:
+          name: evaluate-and-register
+      load-training-data:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-load-training-data
+        taskInfo:
+          name: load-training-data
+      train-lightgbm:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train-lightgbm
+        dependentTasks:
+        - load-training-data
+        inputs:
+          artifacts:
+            training_data:
+              taskOutputArtifact:
+                outputArtifactKey: training_data
+                producerTask: load-training-data
+        taskInfo:
+          name: train-lightgbm
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.18.0
