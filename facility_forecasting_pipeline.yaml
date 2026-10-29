@@ -81,39 +81,45 @@ deploymentSpec:
           \    registered_model_name: Output[Dataset],\n):\n    import uuid\n    from\
           \ pathlib import Path\n\n    from google.cloud import aiplatform, storage\n\
           \    from google.api_core.exceptions import NotFound\n    from google.cloud\
-          \ import aiplatform_v1\n\n    import joblib\n    import pandas as pd\n\n\
-          \    from sklearn.metrics import (\n        mean_absolute_error,\n     \
-          \   mean_squared_error,\n    )\n\n    artifact = joblib.load(trained_model.path)\n\
-          \n    model = artifact[\"model\"]\n    features = artifact[\"features\"\
-          ]\n    categories = artifact[\"categories\"]\n\n    df = pd.read_parquet(training_data.path)\n\
-          \n    validation = df[\n        (df[\"prediction_date\"] >= \"2025-09-01\"\
-          )\n        & (df[\"prediction_date\"] <= \"2025-10-24\")\n    ].copy()\n\
-          \n    X_val = validation[features].copy()\n\n    X_val[\"facility_id\"]\
-          \ = pd.Categorical(\n        X_val[\"facility_id\"],\n        categories=categories,\n\
-          \    )\n\n    y_val = validation[\"bookings_next_7_days\"]\n\n    predictions\
-          \ = model.predict(X_val)\n\n    mae = float(mean_absolute_error(y_val, predictions))\n\
+          \ import aiplatform_v1\n    from google.protobuf.struct_pb2 import Struct\n\
+          \n    import joblib\n    import pandas as pd\n\n    from sklearn.metrics\
+          \ import (\n        mean_absolute_error,\n        mean_squared_error,\n\
+          \    )\n\n    # --------------------------------------------------\n   \
+          \ # 1. Load the trained model and validation dataset\n    # --------------------------------------------------\n\
+          \n    artifact = joblib.load(trained_model.path)\n\n    model = artifact[\"\
+          model\"]\n    features = artifact[\"features\"]\n    categories = artifact[\"\
+          categories\"]\n\n    df = pd.read_parquet(training_data.path)\n\n    validation\
+          \ = df[\n        (df[\"prediction_date\"] >= \"2025-09-01\")\n        &\
+          \ (df[\"prediction_date\"] <= \"2025-10-24\")\n    ].copy()\n\n    X_val\
+          \ = validation[features].copy()\n\n    X_val[\"facility_id\"] = pd.Categorical(\n\
+          \        X_val[\"facility_id\"],\n        categories=categories,\n    )\n\
+          \n    y_val = validation[\"bookings_next_7_days\"]\n\n    predictions =\
+          \ model.predict(X_val)\n\n    mae = float(mean_absolute_error(y_val, predictions))\n\
           \n    rmse = float(\n        mean_squared_error(y_val, predictions) ** 0.5\n\
           \    )\n\n    wmape = float(\n        abs(y_val - predictions).sum()\n \
           \       / abs(y_val).sum()\n    )\n\n    evaluation_metrics.log_metric(\"\
           mae\", mae)\n    evaluation_metrics.log_metric(\"rmse\", rmse)\n    evaluation_metrics.log_metric(\"\
           wmape\", wmape)\n\n    print(\n        f\"Validation: MAE={mae:.4f}, \"\n\
           \        f\"RMSE={rmse:.4f}, WMAPE={wmape:.4f}\",\n        flush=True,\n\
-          \    )\n\n    project = \"storage-analytics-lab\"\n    region = \"us-west2\"\
-          \n\n    bucket_name = \"storage-analytics-lab-registered-models\"\n    model_id\
+          \    )\n\n    # --------------------------------------------------\n   \
+          \ # 2. Configure model registration\n    # --------------------------------------------------\n\
+          \n    project = \"storage-analytics-lab\"\n    region = \"us-west2\"\n\n\
+          \    bucket_name = \"storage-analytics-lab-registered-models\"\n    model_id\
           \ = \"facility-demand-lightgbm\"\n\n    parent_model = (\n        \"projects/555144694235/\"\
           \n        \"locations/us-west2/\"\n        f\"models/{model_id}\"\n    )\n\
           \n    image_uri = (\n        \"us-west2-docker.pkg.dev/\"\n        \"storage-analytics-lab/ml-containers/\"\
           \n        \"lightgbm-inference:v1\"\n    )\n\n    aiplatform.init(\n   \
-          \     project=project,\n        location=region,\n    )\n\n    # Store this\
-          \ run's artifact in a unique directory.\n    run_id = uuid.uuid4().hex\n\
-          \n    artifact_prefix = (\n        f\"facility-demand/{run_id}\"\n    )\n\
-          \n    artifact_uri = (\n        f\"gs://{bucket_name}/{artifact_prefix}\"\
+          \     project=project,\n        location=region,\n    )\n\n    # --------------------------------------------------\n\
+          \    # 3. Upload the model artifact to GCS\n    # --------------------------------------------------\n\
+          \n    run_id = uuid.uuid4().hex\n\n    artifact_prefix = f\"facility-demand/{run_id}\"\
+          \n\n    artifact_uri = (\n        f\"gs://{bucket_name}/{artifact_prefix}\"\
           \n    )\n\n    client = storage.Client(project=project)\n\n    blob = client.bucket(bucket_name).blob(\n\
           \        f\"{artifact_prefix}/model.joblib\"\n    )\n\n    blob.upload_from_filename(trained_model.path)\n\
-          \n    print(f\"Model artifact: {artifact_uri}\", flush=True)\n\n    # Determine\
-          \ whether the parent model already exists.\n\n    model_client = aiplatform_v1.ModelServiceClient(\n\
-          \        client_options={\n            \"api_endpoint\": f\"{region}-aiplatform.googleapis.com\"\
-          \n        }\n    )\n\n    try:\n        model_client.get_model(name=parent_model)\n\
+          \n    print(f\"Model artifact: {artifact_uri}\", flush=True)\n\n    # --------------------------------------------------\n\
+          \    # 4. Register a new model version\n    # --------------------------------------------------\n\
+          \n    model_client = aiplatform_v1.ModelServiceClient(\n        client_options={\n\
+          \            \"api_endpoint\": f\"{region}-aiplatform.googleapis.com\"\n\
+          \        }\n    )\n\n    try:\n        model_client.get_model(name=parent_model)\n\
           \        model_exists = True\n        print(\"Existing registered model\
           \ found.\", flush=True)\n\n    except NotFound:\n        model_exists =\
           \ False\n        print(\"No existing model; creating version 1.\", flush=True)\n\
@@ -122,30 +128,28 @@ deploymentSpec:
           : image_uri,\n        \"serving_container_predict_route\": \"/predict\"\
           ,\n        \"serving_container_health_route\": \"/health\",\n        \"\
           serving_container_ports\": [8080],\n        \"sync\": True,\n    }\n\n \
-          \   if model_exists:\n        # Add a new version without changing the default\
-          \ alias.\n        upload_args[\"parent_model\"] = parent_model\n       \
-          \ upload_args[\"is_default_version\"] = False\n    else:\n        # Create\
-          \ the first version with a predictable model ID.\n        upload_args[\"\
-          model_id\"] = model_id\n\n    model = aiplatform.Model.upload(**upload_args)\n\
-          \n    print(\n        f\"Registered model: {model.resource_name}\",\n  \
-          \      flush=True,\n    )\n\n    print(\n        f\"Version ID: {model.version_id}\"\
-          ,\n        flush=True,\n    )\n\n    # Save both identifiers for downstream\
-          \ use.\n    Path(registered_model_name.path).write_text(\n        f\"{model.resource_name}@{model.version_id}\"\
-          \n    )\n\n    from google.cloud import aiplatform_v1\n    from google.protobuf.struct_pb2\
-          \ import Struct\n\n    metrics = Struct()\n    metrics.update({\n      \
-          \  \"meanAbsoluteError\": mae,\n        \"rootMeanSquaredError\": rmse,\n\
-          \    })\n\n    evaluation = aiplatform_v1.ModelEvaluation(\n        display_name=\"\
-          validation\",\n        metrics_schema_uri=(\n            \"gs://google-cloud-aiplatform/schema/\"\
+          \   if model_exists:\n        upload_args[\"parent_model\"] = parent_model\n\
+          \        upload_args[\"is_default_version\"] = False\n    else:\n      \
+          \  upload_args[\"model_id\"] = model_id\n\n    registered_model = aiplatform.Model.upload(**upload_args)\n\
+          \n    print(\n        f\"Registered model: {registered_model.resource_name}\"\
+          ,\n        flush=True,\n    )\n\n    print(\n        f\"Version ID: {registered_model.version_id}\"\
+          ,\n        flush=True,\n    )\n\n    # --------------------------------------------------\n\
+          \    # 5. Record the registered model version\n    # --------------------------------------------------\n\
+          \n    versioned_model_name = (\n        f\"{registered_model.resource_name}\"\
+          \n        f\"@{registered_model.version_id}\"\n    )\n\n    Path(registered_model_name.path).write_text(\n\
+          \        versioned_model_name\n    )\n\n    # --------------------------------------------------\n\
+          \    # 6. Import evaluation metrics into Model Registry\n    # --------------------------------------------------\n\
+          \n    metrics = Struct()\n    metrics.update({\n        \"meanAbsoluteError\"\
+          : mae,\n        \"rootMeanSquaredError\": rmse,\n    })\n\n    evaluation\
+          \ = aiplatform_v1.ModelEvaluation(\n        display_name=\"validation\"\
+          ,\n        metrics_schema_uri=(\n            \"gs://google-cloud-aiplatform/schema/\"\
           \n            \"modelevaluation/regression_metrics_1.0.0.yaml\"\n      \
-          \  ),\n        metrics=metrics,\n    )\n\n    model_client = aiplatform_v1.ModelServiceClient(\n\
-          \        client_options={\n            \"api_endpoint\": f\"{region}-aiplatform.googleapis.com\"\
-          \n        }\n    )\n\n\n    versioned_model_name = (\n        f\"{model.resource_name}@{model.version_id}\"\
-          \n    )\n\n    imported_evaluation = model_client.import_model_evaluation(\n\
+          \  ),\n        metrics=metrics,\n    )\n\n    imported_evaluation = model_client.import_model_evaluation(\n\
           \        parent=versioned_model_name,\n        model_evaluation=evaluation,\n\
-          \    )\n\n\n    print(\n        f\"Imported evaluation: {imported_evaluation.name}\"\
+          \    )\n\n    print(\n        f\"Imported evaluation: {imported_evaluation.name}\"\
           ,\n        flush=True,\n    )\n\n    registered_model_name.metadata[\"model_resource_name\"\
-          ] = (\n        model.resource_name\n    )\n\n    registered_model_name.metadata[\"\
-          version_id\"] = (\n        model.version_id\n    )\n\n"
+          ] = (\n        registered_model.resource_name\n    )\n\n    registered_model_name.metadata[\"\
+          version_id\"] = (\n        registered_model.version_id\n    )\n\n"
         image: python:3.11
     exec-load-training-data:
       container:
