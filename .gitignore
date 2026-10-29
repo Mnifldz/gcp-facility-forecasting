@@ -1,6 +1,7 @@
 # Python virtual environments
 .venv/
 .venv-dbt/
+.venv-pipeline/
 
 # Python cache
 __pycache__/
@@ -21,3 +22,6 @@ logs/
 
 # macOS
 .DS_Store
+
+# Inference artifacts
+serving/lightgbm/model/
